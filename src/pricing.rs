@@ -64,6 +64,15 @@ const BASE_PRICES: &[(&str, Price)] = &[
     ("gpt-5-nano", price(0.05, 0.40)),
     ("gpt-5.1", price(1.25, 10.00)),
     ("gpt-5.2", price(1.75, 14.00)),
+    ("gpt-5.4-mini", price(0.75, 4.50)),
+    ("gpt-5.4-nano", price(0.20, 1.25)),
+    ("gpt-5.4-pro", price(30.00, 180.00)),
+    ("gpt-5.4", price(2.50, 15.00)),
+    ("gpt-5.5-pro", price(30.00, 180.00)),
+    ("gpt-5.5", price(5.00, 30.00)),
+    ("gpt-5.6-sol", price(5.00, 30.00)),
+    ("gpt-5.6-terra", price(2.00, 12.00)),
+    ("gpt-5.6-luna", price(0.20, 1.20)),
     ("gpt-5", price(1.25, 10.00)),
     // OpenAI — GPT-4.1 family
     ("gpt-4.1-mini", price(0.40, 1.60)),
@@ -173,6 +182,18 @@ mod tests {
         );
         assert_eq!(lookup("o3", &[]), Some(price(2.00, 8.00)));
         assert_eq!(lookup("o3-mini", &[]), Some(price(1.10, 4.40)));
+        // gpt-5.4's family has a base entry plus three sibling suffixes
+        // (mini/nano/pro) that must not be shadowed by the shorter "gpt-5.4"
+        // key, and gpt-5.6 has no bare entry at all — only named tiers.
+        assert_eq!(lookup("gpt-5.4", &[]), Some(price(2.50, 15.00)));
+        assert_eq!(lookup("gpt-5.4-mini", &[]), Some(price(0.75, 4.50)));
+        assert_eq!(lookup("gpt-5.4-nano", &[]), Some(price(0.20, 1.25)));
+        assert_eq!(lookup("gpt-5.4-pro", &[]), Some(price(30.00, 180.00)));
+        assert_eq!(lookup("gpt-5.5", &[]), Some(price(5.00, 30.00)));
+        assert_eq!(lookup("gpt-5.5-pro", &[]), Some(price(30.00, 180.00)));
+        assert_eq!(lookup("gpt-5.6-sol", &[]), Some(price(5.00, 30.00)));
+        assert_eq!(lookup("gpt-5.6-terra", &[]), Some(price(2.00, 12.00)));
+        assert_eq!(lookup("gpt-5.6-luna", &[]), Some(price(0.20, 1.20)));
     }
 
     #[test]
