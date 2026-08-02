@@ -59,12 +59,14 @@ Run `tokcost --help` for the full flag list.
 ## How it works
 
 - **`src/bpe.rs`** — the BPE encoder, in two parts: a pretokenizer that
-  reproduces tiktoken's `cl100k_base`/`o200k_base` split regexes as a plain
-  left-to-right character scan (no `regex` crate — Unicode letter/digit/case
-  classification comes from `char`'s own methods, which ship in libcore),
-  and the reference merge loop tiktoken itself documents as its
-  "educational" implementation (repeatedly merge the lowest-rank adjacent
-  byte pair until none remain).
+  produces the same final token IDs as tiktoken's
+  `cl100k_base`/`o200k_base` split regexes using a plain left-to-right
+  character scan (no `regex` crate — Unicode letter/digit/case
+  classification comes from `char`'s own methods, which ship in libcore;
+  see the disclosure below for exactly what "same token IDs" does and
+  doesn't mean), and the reference merge loop tiktoken itself documents as
+  its "educational" implementation (repeatedly merge the lowest-rank
+  adjacent byte pair until none remain).
 - **`build.rs`** — parses the canonical `.tiktoken` rank files committed in
   `assets/` (hand-rolled base64 decoder, since even that's a crate
   elsewhere), verifies every rank is sequential from 0 as a build-time
@@ -97,13 +99,27 @@ This tool would rather show you `n/a` than a confident-looking wrong number.
   its `PRICING_AS_OF` date. Use `TK_PRICES` to correct it, or a model
   tokcost doesn't recognize will honestly report `n/a` instead of a made-up
   cost.
-- **`o200k_base`'s Unicode mark detection is best-effort.** Its split
-  pattern distinguishes combining marks (`\p{M}`) as their own category.
-  Rust's `char` gives exact, free letter/digit/case classification, but has
-  no combining-mark accessor, so tokcost's detector only covers the common
-  Latin-adjacent combining-diacritic Unicode blocks. Text in scripts whose
-  marks fall outside those blocks may tokenize slightly differently than
-  real `o200k_base`. Pinned down by the golden tests; not yet exhaustive.
+- **The pretokenizer is deliberately coarser than tiktoken's regexes —
+  equal token IDs, not equal split boundaries.** Real `o200k_base` cuts a
+  word at every lowercase→uppercase transition (`myVariable` → `my` |
+  `Variable`); tokcost keeps the whole run as one piece. That coalescing is
+  provably harmless *by construction*: BPE vocabularies are learned from
+  text that was pretokenized by this same regex first, so no merge rule in
+  the shipped rank tables can span a boundary the real splitter always
+  draws — the merge loop finds nothing to merge across it, and the final
+  token IDs come out identical. (The reverse — splitting *finer* than the
+  real regex — is not safe, and tokcost never does it.) The golden tests
+  verify the resulting IDs against real `tiktoken` output, including
+  camelCase and mixed-case-contraction cases. tokcost does not claim
+  boundary-for-boundary regex fidelity, only ID-for-ID output equality.
+- **`o200k_base`'s Unicode mark detection is best-effort** — and unlike the
+  coarsening above, this one is a genuine approximation. The split pattern
+  treats combining marks (`\p{M}`) as word characters. Rust's `char` gives
+  exact, free letter/digit/case classification, but has no combining-mark
+  accessor, so tokcost's detector only covers the common Latin-adjacent
+  combining-diacritic Unicode blocks. Text in scripts whose marks fall
+  outside those blocks may genuinely tokenize differently than real
+  `o200k_base`. Pinned down by the golden tests; not yet exhaustive.
 - **The live ticker can't redraw in place.** Stdout is tee'd byte-for-byte
   so piping the wrapped command elsewhere still works, which means it can
   end mid-line at any point. A single overwriting ticker line sharing that
