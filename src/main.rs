@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::io::{self, IsTerminal, Read, Write};
 use tokcost::render::{self, Json, JsonObject};
 use tokcost::{meter, pricing, vocab};

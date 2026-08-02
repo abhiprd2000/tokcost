@@ -3,6 +3,8 @@
 //! future integration test) can reach `bpe`/`vocab` directly instead of
 //! only being able to exercise the CLI as a black box.
 
+#![forbid(unsafe_code)]
+
 pub mod bpe;
 pub mod meter;
 pub mod pricing;
