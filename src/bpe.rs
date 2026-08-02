@@ -2,12 +2,44 @@
 //!
 //! Two things live here:
 //!
-//! 1. `split`: a pretokenizer that reproduces the *behavior* of tiktoken's
-//!    `cl100k_base` / `o200k_base` splitting regexes without a regex engine.
-//!    Those patterns only ever classify a character as one of: contraction
-//!    apostrophe, letter/mark, digit, "symbol" (punctuation), or whitespace,
-//!    so a single left-to-right scan with a handful of named rules covers
-//!    them, in the same alternation order as the source regexes.
+//! 1. `split`: a pretokenizer that produces the same *final token IDs* as
+//!    tiktoken's `cl100k_base` / `o200k_base` splitting regexes, without a
+//!    regex engine. It does **not** claim to reproduce those regexes'
+//!    exact boundary placement — it's deliberately coarser in one specific
+//!    way: `o200k_base`'s real word alternatives (`UP*LO+` / `UP+LO*`) only
+//!    ever match a run of *homogeneous case*, so the real splitter cuts at
+//!    every lowercase-to-uppercase transition (`myVariable` -> `my` |
+//!    `Variable`). This splitter instead greedily consumes the whole
+//!    alphabetic run regardless of case, so `myVariable` stays one piece.
+//!
+//!    That's safe rather than approximate, by construction: tiktoken (and
+//!    BPE tokenizers generally) are trained by pretokenizing the training
+//!    corpus with this same regex *first*, then learning merge rules
+//!    independently within each resulting piece — the trainer never
+//!    observes two pretokens' bytes adjacent to each other, for any input,
+//!    because the regex structurally forbids it. So no rank-table entry
+//!    can ever bridge a boundary the real splitter always draws, at *any*
+//!    case transition, in *any* text. `byte_pair_merge` only merges a pair
+//!    when `ranks` has an entry for it; since no such entry can exist
+//!    across that boundary, feeding it a coarser piece that merely omits
+//!    the boundary yields the identical sequence of merges as feeding it
+//!    the two real pieces separately — the algorithm never gets a chance
+//!    to satisfy a merge there, because there's provably nothing to find.
+//!
+//!    The converse does *not* hold: adding a boundary the real splitter
+//!    does not have (a *finer* split) can block a merge the real tokenizer
+//!    would have made, which does change the output. So coarser is safe,
+//!    finer is not — every rule in this file errs only on the coarse side.
+//!
+//!    Contractions: both vocabularies match contraction suffixes
+//!    case-insensitively — cl100k_base's group is `'(?i:[sdmt]|ll|ve|re)`
+//!    and o200k_base's is `(?i:'s|'t|'re|'ve|'m|'ll|'d)` (verified against
+//!    tiktoken 0.13.0's pattern strings and its actual split output on
+//!    inputs like `x'Sy` and `DON'T`, both pinned by golden fixtures).
+//!    `match_contraction` still takes an explicit case-insensitivity flag
+//!    so each call site *states* which regex group it's implementing
+//!    rather than baking the sameness in silently — if a future vocab ever
+//!    differs, the knob already exists.
 //!
 //! 2. `byte_pair_merge`: the reference O(n^2) BPE merge tiktoken itself ships
 //!    as its "educational" implementation (repeatedly merge the lowest-rank
@@ -15,15 +47,17 @@
 //!    algorithm, but it's ~20 lines, obviously correct, and fast enough since
 //!    pretokenization already keeps individual pieces short.
 //!
-//! Known approximation: `o200k_base`'s split pattern distinguishes fine
-//! Unicode letter subcategories (Lu/Ll/Lt/Lm/Lo) and combining marks (M).
-//! Rust's `char` gives us `is_alphabetic`/`is_uppercase`/`is_lowercase` for
-//! free (no crate needed, these ship in libcore), which covers the letter
-//! side exactly. Combining marks have no libcore accessor, so `is_mark`
-//! below recognizes only the common combining-diacritic Unicode blocks
+//! Known approximation (a real one, unlike the case-run coarsening above):
+//! `o200k_base`'s split pattern distinguishes fine Unicode letter
+//! subcategories (Lu/Ll/Lt/Lm/Lo) and combining marks (M). Rust's `char`
+//! gives us `is_alphabetic`/`is_uppercase`/`is_lowercase` for free (no
+//! crate needed, these ship in libcore), which covers the letter side
+//! exactly. Combining marks have no libcore accessor, so `is_mark` below
+//! recognizes only the common combining-diacritic Unicode blocks
 //! (Latin-adjacent). Rare scripts whose combining marks fall outside those
-//! blocks may split slightly differently than real o200k_base. This is
-//! disclosed in the README and pinned down by golden tests.
+//! blocks may split — and in this case may actually *encode* —
+//! differently than real o200k_base. This is disclosed in the README and
+//! pinned down by golden tests.
 
 use std::collections::HashMap;
 
@@ -106,7 +140,7 @@ pub fn split(text: &str, pattern: Pattern) -> Vec<&str> {
     let mut i = 0;
     while i < n {
         let len = (if pattern == Pattern::Cl100kBase {
-            match_contraction(&chars, i)
+            match_contraction(&chars, i, true)
         } else {
             None
         })
@@ -150,13 +184,32 @@ fn is_wordish(c: char, pattern: Pattern) -> bool {
     c.is_alphabetic() || (pattern == Pattern::O200kBase && is_mark(c))
 }
 
-/// `(?i:'s|'t|'re|'ve|'m|'ll|'d)` — a contraction suffix starting at `i`.
-/// Returns the number of chars consumed (including the apostrophe).
-fn match_contraction(chars: &[(usize, char)], i: usize) -> Option<usize> {
+/// A contraction suffix starting at `i`: `'s`, `'t`, `'re`, `'ve`, `'m`,
+/// `'ll`, or `'d`. Returns the number of chars consumed (including the
+/// apostrophe).
+///
+/// `case_insensitive` names the behavior of the regex group each call
+/// site implements. As shipped, both are `true`: cl100k_base's group is
+/// `'(?i:[sdmt]|ll|ve|re)` and o200k_base's is
+/// `(?i:'s|'t|'re|'ve|'m|'ll|'d)` — verified against real tiktoken's
+/// pattern strings and split output, and pinned by the golden fixtures
+/// (`x'Sy`, `DON'T STOP`, ...). The flag exists so the call sites document
+/// which group they mirror; passing `false` would make that splitter
+/// *finer* than the real one, which is the unsafe direction (see the
+/// module docs).
+fn match_contraction(chars: &[(usize, char)], i: usize, case_insensitive: bool) -> Option<usize> {
     if chars.get(i).map(|c| c.1) != Some('\'') {
         return None;
     }
-    let at = |k: usize| chars.get(i + k).map(|c| c.1.to_ascii_lowercase());
+    let at = |k: usize| {
+        chars.get(i + k).map(|c| {
+            if case_insensitive {
+                c.1.to_ascii_lowercase()
+            } else {
+                c.1
+            }
+        })
+    };
     match at(1)? {
         's' | 't' | 'm' | 'd' => Some(2),
         'r' if at(2) == Some('e') => Some(3),
@@ -166,13 +219,15 @@ fn match_contraction(chars: &[(usize, char)], i: usize) -> Option<usize> {
     }
 }
 
-/// cl100k: `[^\r\n\p{L}\p{N}]?\p{L}+`
-/// o200k:  the two `UP*LO+` / `UP+LO*` alternatives. Since both quantified
-/// classes only ever consume "wordish" chars, and greedy backtracking will
-/// always find *some* split between them as long as one wordish char exists,
-/// together they're equivalent to "the maximal run of wordish chars" —
-/// optionally preceded by one boundary char and followed by a contraction
-/// suffix.
+/// cl100k: `[^\r\n\p{L}\p{N}]?\p{L}+` — matched exactly.
+/// o200k: real tiktoken uses two case-homogeneous alternatives, `UP*LO+` /
+/// `UP+LO*`, so it cuts at every case transition. This deliberately does
+/// not: it consumes the whole run of wordish chars regardless of case, a
+/// coarser split that's still encoding-equivalent (see the module docs).
+/// Both patterns get an optional leading boundary char and, for o200k
+/// only, an optional trailing contraction suffix (matched case-
+/// insensitively, unlike cl100k's standalone, case-sensitive check in
+/// `split`).
 fn match_word(chars: &[(usize, char)], i: usize, pattern: Pattern) -> Option<usize> {
     let n = chars.len();
     let (start, prefix) = if is_wordish(chars[i].1, pattern) {
@@ -190,7 +245,7 @@ fn match_word(chars: &[(usize, char)], i: usize, pattern: Pattern) -> Option<usi
     let mut len = prefix + (j - start);
 
     if pattern == Pattern::O200kBase {
-        if let Some(clen) = match_contraction(chars, i + len) {
+        if let Some(clen) = match_contraction(chars, i + len, true) {
             len += clen;
         }
     }
@@ -323,6 +378,29 @@ mod tests {
     #[test]
     fn split_cl100k_contraction_is_its_own_token() {
         assert_eq!(split("don't", Pattern::Cl100kBase), vec!["don", "'t"]);
+    }
+
+    #[test]
+    fn split_cl100k_contraction_is_case_insensitive() {
+        // cl100k_base's contraction group is `'(?i:[sdmt]|ll|ve|re)` —
+        // case-insensitive — so `'S` is a contraction there too (verified
+        // against real tiktoken's split: x'Sy -> x | 'S | y).
+        assert_eq!(split("x'Sy", Pattern::Cl100kBase), vec!["x", "'S", "y"]);
+        assert_eq!(
+            split("DON'T STOP", Pattern::Cl100kBase),
+            vec!["DON", "'T", " STOP"]
+        );
+    }
+
+    #[test]
+    fn split_o200k_contraction_is_case_insensitive() {
+        // o200k_base folds case too, but attaches the contraction to the
+        // word (real tiktoken: x'Sy -> x'S | y).
+        assert_eq!(split("x'Sy", Pattern::O200kBase), vec!["x'S", "y"]);
+        assert_eq!(
+            split("DON'T STOP", Pattern::O200kBase),
+            vec!["DON'T", " STOP"]
+        );
     }
 
     #[test]
