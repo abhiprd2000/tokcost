@@ -1,0 +1,17 @@
+[package]
+name = "tokcost"
+version = "0.1.0"
+edition = "2021"
+description = "Exact BPE token counting and cost estimation for LLM APIs"
+license = "MIT"
+repository = "https://github.com/abhiprd2000/tokcost"
+
+[dependencies]
+
+[lib]
+name = "tokcost"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tokcost"
+path = "src/main.rs"
