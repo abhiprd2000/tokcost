@@ -39,7 +39,7 @@ impl Cost {
 
 /// The date this table was last checked against provider pricing pages.
 /// Treat anything computed from it as approximate past this date.
-pub const PRICING_AS_OF: &str = "2025-06-01";
+pub const PRICING_AS_OF: &str = "2026-08-02";
 
 const fn price(input_per_million: f64, output_per_million: f64) -> Price {
     Price {
@@ -49,21 +49,45 @@ const fn price(input_per_million: f64, output_per_million: f64) -> Price {
 }
 
 /// Snapshot of published per-million-token USD pricing as of
-/// `PRICING_AS_OF`. Embedding models have no output rate (0.0).
+/// `PRICING_AS_OF`, taken from the providers' official pricing pages
+/// (`developers.openai.com/api/docs/pricing` and
+/// `platform.claude.com/docs/en/about-claude/pricing`). Current families
+/// only — a model that isn't listed reports `n/a` rather than guessing,
+/// and `TK_PRICES` covers the gap.
+///
+/// Keys are ordered longest-first only for readability; `lookup` picks the
+/// longest matching prefix regardless of position, so `gpt-5-mini` wins
+/// over `gpt-5` for `gpt-5-mini-2026-01-01`.
 const BASE_PRICES: &[(&str, Price)] = &[
-    ("gpt-3.5-turbo", price(0.50, 1.50)),
-    ("gpt-4-32k", price(60.00, 120.00)),
-    ("gpt-4", price(30.00, 60.00)),
+    // OpenAI — GPT-5 family
+    ("gpt-5-mini", price(0.25, 2.00)),
+    ("gpt-5-nano", price(0.05, 0.40)),
+    ("gpt-5.1", price(1.25, 10.00)),
+    ("gpt-5.2", price(1.75, 14.00)),
+    ("gpt-5", price(1.25, 10.00)),
+    // OpenAI — GPT-4.1 family
+    ("gpt-4.1-mini", price(0.40, 1.60)),
+    ("gpt-4.1-nano", price(0.10, 0.40)),
+    ("gpt-4.1", price(2.00, 8.00)),
+    // OpenAI — reasoning models
+    ("o3-mini", price(1.10, 4.40)),
+    ("o3", price(2.00, 8.00)),
+    ("o4-mini", price(1.10, 4.40)),
+    // OpenAI — GPT-4o family
     ("gpt-4o-mini", price(0.15, 0.60)),
     ("gpt-4o", price(2.50, 10.00)),
-    ("o1-mini", price(3.00, 12.00)),
-    ("o1", price(15.00, 60.00)),
-    ("o3-mini", price(1.10, 4.40)),
-    ("text-embedding-ada-002", price(0.10, 0.0)),
-    ("claude-3-5-sonnet", price(3.00, 15.00)),
-    ("claude-3-5-haiku", price(0.80, 4.00)),
-    ("claude-3-opus", price(15.00, 75.00)),
-    ("claude-3-haiku", price(0.25, 1.25)),
+    // Anthropic — Claude. Note `claude-sonnet-5` is priced at its
+    // introductory rate ($2/$10), which reverts to $3/$15 on 2026-09-01;
+    // callers past that date should override via TK_PRICES.
+    ("claude-opus-4-8", price(5.00, 25.00)),
+    ("claude-opus-4-7", price(5.00, 25.00)),
+    ("claude-opus-4-6", price(5.00, 25.00)),
+    ("claude-opus-5", price(5.00, 25.00)),
+    ("claude-sonnet-5", price(2.00, 10.00)),
+    ("claude-sonnet-4-6", price(3.00, 15.00)),
+    ("claude-sonnet-4-5", price(3.00, 15.00)),
+    ("claude-haiku-4-5", price(1.00, 5.00)),
+    ("claude-fable-5", price(10.00, 50.00)),
 ];
 
 /// Find the price for `model` among `entries` by longest matching prefix.
@@ -134,19 +158,38 @@ mod tests {
 
     #[test]
     fn longest_prefix_wins_among_overlapping_families() {
-        assert_eq!(lookup("gpt-4", &[]), Some(price(30.00, 60.00)));
-        assert_eq!(lookup("gpt-4-32k", &[]), Some(price(60.00, 120.00)));
-        assert_eq!(lookup("gpt-4-32k-0613", &[]), Some(price(60.00, 120.00)));
+        // The shorter family key must not shadow the longer, more specific
+        // one — `gpt-5-mini` and `gpt-5` both prefix-match a mini model.
+        assert_eq!(lookup("gpt-5", &[]), Some(price(1.25, 10.00)));
+        assert_eq!(lookup("gpt-5-mini", &[]), Some(price(0.25, 2.00)));
+        assert_eq!(
+            lookup("gpt-5-mini-2026-01-01", &[]),
+            Some(price(0.25, 2.00))
+        );
         assert_eq!(lookup("gpt-4o", &[]), Some(price(2.50, 10.00)));
         assert_eq!(
             lookup("gpt-4o-mini-2024-07-18", &[]),
             Some(price(0.15, 0.60))
         );
+        assert_eq!(lookup("o3", &[]), Some(price(2.00, 8.00)));
+        assert_eq!(lookup("o3-mini", &[]), Some(price(1.10, 4.40)));
+    }
+
+    #[test]
+    fn claude_families_are_priced() {
+        // The demo's model in particular must resolve to a real price.
+        assert_eq!(lookup("claude-sonnet-5", &[]), Some(price(2.00, 10.00)));
+        assert_eq!(lookup("claude-opus-5", &[]), Some(price(5.00, 25.00)));
+        assert_eq!(lookup("claude-opus-4-8", &[]), Some(price(5.00, 25.00)));
+        assert_eq!(lookup("claude-haiku-4-5", &[]), Some(price(1.00, 5.00)));
+        assert_eq!(lookup("claude-fable-5", &[]), Some(price(10.00, 50.00)));
     }
 
     #[test]
     fn unknown_model_has_no_price() {
         assert_eq!(lookup("some-fictional-model", &[]), None);
+        // Retired families are deliberately absent rather than stale.
+        assert_eq!(lookup("gpt-3.5-turbo", &[]), None);
     }
 
     #[test]
@@ -155,7 +198,7 @@ mod tests {
         assert_eq!(lookup("gpt-4o", &overrides), Some(price(1.0, 2.0)));
         // A model the base table also knows, but the override doesn't
         // mention, still falls back to the base table.
-        assert_eq!(lookup("gpt-4", &overrides), Some(price(30.00, 60.00)));
+        assert_eq!(lookup("gpt-5", &overrides), Some(price(1.25, 10.00)));
     }
 
     #[test]
