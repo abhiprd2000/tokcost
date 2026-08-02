@@ -85,14 +85,16 @@ const BASE_PRICES: &[(&str, Price)] = &[
     // OpenAI — GPT-4o family
     ("gpt-4o-mini", price(0.15, 0.60)),
     ("gpt-4o", price(2.50, 10.00)),
-    // Anthropic — Claude. Note `claude-sonnet-5` is priced at its
-    // introductory rate ($2/$10), which reverts to $3/$15 on 2026-09-01;
-    // callers past that date should override via TK_PRICES.
+    // Anthropic — Claude. `claude-sonnet-5` ships the standard $3/$15 rate,
+    // not the $2/$10 introductory price — the intro rate expires
+    // 2026-09-01 and this table should stay correct on both sides of that
+    // date rather than going stale the day it lapses. Callers who need the
+    // introductory rate before it expires can set it via TK_PRICES.
     ("claude-opus-4-8", price(5.00, 25.00)),
     ("claude-opus-4-7", price(5.00, 25.00)),
     ("claude-opus-4-6", price(5.00, 25.00)),
     ("claude-opus-5", price(5.00, 25.00)),
-    ("claude-sonnet-5", price(2.00, 10.00)),
+    ("claude-sonnet-5", price(3.00, 15.00)),
     ("claude-sonnet-4-6", price(3.00, 15.00)),
     ("claude-sonnet-4-5", price(3.00, 15.00)),
     ("claude-haiku-4-5", price(1.00, 5.00)),
@@ -198,8 +200,9 @@ mod tests {
 
     #[test]
     fn claude_families_are_priced() {
-        // The demo's model in particular must resolve to a real price.
-        assert_eq!(lookup("claude-sonnet-5", &[]), Some(price(2.00, 10.00)));
+        // The demo's model in particular must resolve to a real price, at
+        // the standard (not introductory) rate.
+        assert_eq!(lookup("claude-sonnet-5", &[]), Some(price(3.00, 15.00)));
         assert_eq!(lookup("claude-opus-5", &[]), Some(price(5.00, 25.00)));
         assert_eq!(lookup("claude-opus-4-8", &[]), Some(price(5.00, 25.00)));
         assert_eq!(lookup("claude-haiku-4-5", &[]), Some(price(1.00, 5.00)));
